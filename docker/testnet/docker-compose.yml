@@ -1,0 +1,14 @@
+version: '3.4'
+
+services:
+    api:
+        build: ../..
+        image: multyio/steem-back:v0.1
+        env_file:
+            - env.secret
+        environment:
+            - "MULTY_STEEM_NET=test"
+            - "MULTY_STEEM_PORT=80"
+            - "MULTY_STEEM_NODE=wss://testnet.steem.vc"
+        ports:
+            - "80"

@@ -1,0 +1,28 @@
+version: '3.4'
+
+services:
+    api:
+        build: ../..
+        image: multyio/steem-back:v0.1
+        links:
+            - steem:steem-node
+        env_file:
+            - env.api.secret
+        environment:
+            - "MULTY_STEEM_NET=steem"
+            - "MULTY_STEEM_PORT=80"
+            - "MULTY_STEEM_NODE=ws://steem-node:8090"
+        ports:
+            - "80"
+
+    steem:
+        image: steemit/steem:latest
+        env_file:
+            - env.steem.secret
+        environment:
+            - "STEEMD_EXTRA_OPTS=--enable-stale-production"
+        expose:
+            - "8090"
+        ports:
+            - "8090"
+            - "2001"
