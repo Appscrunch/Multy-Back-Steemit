@@ -1,16 +1,27 @@
+/*
+ * Copyright 2018 Idealnaya rabota LLC
+ * Licensed under Multy.io license.
+ * See LICENSE for details
+ */
+
+/*
+* Copyright 2018 Idealnaya rabota LLC
+* Licensed under Multy.io license.
+* See LICENSE for details
+*/
+
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
+	"net"
 	"os"
 
-	"github.com/Appscrunch/Multy-Back-Steemit/api"
-
-	socketio "github.com/googollee/go-socket.io"
+	"github.com/Appscrunch/Multy-Back-Steemit/steem"
+	pb "github.com/Appscrunch/Multy-Back-Steemit/proto"
 	"github.com/urfave/cli"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -20,177 +31,24 @@ var (
 )
 
 const (
-	VERSION = "v0.1"
-
-	ROOM                        = "steem"
-	EVENT_CONNECTION            = "connection"
-	EVENT_CREATE_ACCOUNT        = "account:create"
-	EVENT_CHECK_ACCOUNT         = "account:check"
-	EVENT_BALANCE_GET           = "balance:get"
-	EVENT_BALANCE_CHANGED       = "balance:changed"
-	EVENT_TRACK_ADDRESSES       = "balance:track:add"
-	EVENT_GET_TRACKED_ADDRESSES = "balance:track:get"
-	EVENT_SEND_TRANSACTION      = "transaction:send"
-	EVENT_NEW_BLOCK             = "block:new"
+	VERSION = "v0.2"
 )
 
 type Server struct {
-	*api.API
-}
-
-// stringify marshals data struct to a string
-// it ignores marshal data, so use it on knownly valid structs
-func stringify(data interface{}) string {
-	s, err := json.Marshal(data)
-	if err != nil {
-		log.Printf("stringify: %s", err)
-	}
-	return string(s)
-}
-
-// errStr converts nil errors to an empty string
-// and non-nil errors to it string representation
-func errStr(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	*steem.Server
 }
 
 // NewServer constructs new server handler
 func NewServer(endpoints []string, net, account, key string) (*Server, error) {
-	a, err := api.NewAPI(endpoints, net, account, key)
+	a, err := steem.NewServer(endpoints, net, account, key)
 	return &Server{a}, err
-}
-
-func unmarshalRequest(data interface{}, v interface{}) error {
-	return json.Unmarshal([]byte(stringify(data)), v)
-}
-
-func (s *Server) onAccountCheck(data interface{}) string {
-	req := api.AccountCheckRequest{}
-	err := unmarshalRequest(data, req)
-	if err != nil {
-		return stringify(api.OkErrResponse{
-			// account exists by default, so you cannot register one on error
-			Ok:    true,
-			Error: errStr(err),
-		})
-	}
-
-	exist, err := s.AccountCheck(req.Name)
-	return stringify(api.OkErrResponse{
-		Ok:    exist,
-		Error: errStr(err),
-	})
-}
-
-func (s *Server) onAccountCreate(data interface{}) string {
-	req := api.AccountCreateRequest{}
-	err := json.Unmarshal(data.([]byte), &req)
-	if err != nil {
-		stringify(api.OkErrResponse{
-			Ok:    false,
-			Error: errStr(err),
-		})
-	}
-	err = s.AccountCreate(req.Account, "", req.Owner, req.Active, req.Posting, req.Memo)
-	return stringify(api.OkErrResponse{
-		Ok:    err == nil,
-		Error: errStr(err),
-	})
-
-}
-
-func (s *Server) onGetBalances(data interface{}) string {
-	req := api.GetBalancesRequest{}
-	err := unmarshalRequest(data, &req)
-	if err != nil {
-		resp, _ := json.Marshal(api.GetBalancesResponse{
-			Balances: nil,
-			Error:    errStr(err),
-		})
-		return string(resp)
-	}
-	balances, err := s.GetBalances(req.Accounts)
-	return stringify(api.GetBalancesResponse{
-		Balances: balances,
-		Error:    errStr(err),
-	})
-}
-
-func (s *Server) onTrackAddresses(data interface{}) string {
-	req := api.TrackAddressesRequest{}
-	err := unmarshalRequest(data, &req)
-	if err != nil {
-		return stringify(api.TrackAddressesResponse{
-			Ok:    false,
-			Error: errStr(err),
-		})
-	}
-	err = s.TrackAddresses(req.Adresses)
-	return stringify(api.TrackAddressesResponse{
-		Ok:    err == nil,
-		Error: errStr(err),
-	})
-}
-
-func (s *Server) onGetTrackedAddresses(data interface{}) string {
-	// req := api.GetTrackedAddressesRequest{}
-	// err := unmarshalRequest(data, &req)
-	// if err != nil {
-	// 	return stringify(api.GetTrackedAddressesResponse{
-	// 		Accounts: nil,
-	// 		Error:    errStr(err),
-	// 	})
-	// }
-	accs, err := s.GetTrackedAddresses()
-	return stringify(api.GetTrackedAddressesResponse{
-		Accounts: accs,
-		Error:    errStr(err),
-	})
-}
-
-func (s *Server) onSendTransaction(data interface{}) string {
-	req := api.SendTransactionRequest{}
-	err := unmarshalRequest(data, &req)
-	if err != nil {
-		return stringify(api.SendTransactionResponse{
-			Ok:    false,
-			Error: errStr(err),
-		})
-	}
-	bResp, err := s.SendTransaction(&req)
-	return stringify(api.SendTransactionResponse{
-		Ok:       err == nil,
-		Error:    errStr(err),
-		Response: bResp,
-	})
-}
-
-func (s *Server) broadcastLoop(socket *socketio.Server) {
-	blockChan := make(chan *api.NewBlockMessage)
-	balanceChan := make(chan *api.BalancesChangedMessage)
-	done := make(chan bool)
-	go s.NewBlockLoop(blockChan, balanceChan, done, 0)
-	for {
-		select {
-		case block := <-blockChan:
-			log.Printf("broadcast new block: %s", stringify(block))
-			socket.BroadcastTo(ROOM, EVENT_NEW_BLOCK, stringify(block))
-		case balances := <-balanceChan:
-			log.Println("broadcast balance change")
-			socket.BroadcastTo(ROOM, EVENT_BALANCE_CHANGED, stringify(balances))
-		}
-	}
-	// TODO: graceful shutdown
 }
 
 func run(c *cli.Context) error {
 	// check net arguement
-	net := c.String("net")
-	if net != "test" && net != "steem" {
-		return cli.NewExitError(fmt.Sprintf("net must be \"steem\" or \"test\": %s", net), 1)
+	network := c.String("net")
+	if network != "test" && network != "steem" {
+		return cli.NewExitError(fmt.Sprintf("net must be \"steem\" or \"test\": %s", network), 1)
 	}
 
 	server, err := NewServer(
@@ -204,33 +62,24 @@ func run(c *cli.Context) error {
 	}
 	log.Println("new server")
 
-	socket, err := socketio.NewServer(nil)
+	addr := fmt.Sprintf("%s:%s", c.String("host"), c.String("port"))
+
+	// init gRPC server
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatal(err)
+		return cli.NewExitError(fmt.Sprintf("failed to listen: %s", err), 2)
 	}
-
-	socket.On(EVENT_CONNECTION, func(so socketio.Socket) {
-		so.Join(ROOM)
-		so.On(EVENT_CHECK_ACCOUNT, server.onAccountCheck)
-		so.On(EVENT_CREATE_ACCOUNT, server.onAccountCreate)
-		so.On(EVENT_BALANCE_GET, server.onGetBalances)
-		so.On(EVENT_TRACK_ADDRESSES, server.onTrackAddresses)
-		so.On(EVENT_GET_TRACKED_ADDRESSES, server.onGetTrackedAddresses)
-		so.On(EVENT_SEND_TRANSACTION, server.onSendTransaction)
-
-	})
-
-	http.Handle("/socket.io/", socket)
-	hostport := fmt.Sprintf("%s:%s", c.String("host"), c.String("port"))
-	log.Println("Serving at", hostport)
-	go server.broadcastLoop(socket)
-	return cli.NewExitError(http.ListenAndServe(hostport, nil), 3)
+	// Creates a new gRPC server
+	s := grpc.NewServer()
+	pb.RegisterNodeCommunicationsServer(s, server)
+	log.Printf("listening on %s", addr)
+	return cli.NewExitError(s.Serve(lis), 3)
 }
 
 func main() {
 	app := cli.NewApp()
 	app.Name = "multy-steem"
-	app.Usage = `Steemit node socket.io API for Multy backend`
+	app.Usage = `steem node gRPC API for Multy backend`
 	app.Version = fmt.Sprintf("%s (commit: %s, branch: %s, buildtime: %s)", VERSION, commit, branch, buildtime)
 	app.Author = "vovapi"
 	app.Flags = []cli.Flag{
@@ -259,7 +108,7 @@ func main() {
 		},
 		cli.StringFlag{
 			Name:   "account",
-			Usage:  "steem account for user registration",
+			Usage:  "steemit account for user registration",
 			EnvVar: "MULTY_STEEM_ACCOUNT",
 		},
 		cli.StringFlag{
